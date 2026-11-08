@@ -105,11 +105,7 @@ button.danger-link { border: none; background: none; color: var(--danger); paddi
 .sys { border-top: 1px solid var(--line); }
 .sys:first-child { border-top: none; }
 .sys.on { background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
-.sys.locked { background: color-mix(in srgb, var(--muted) 8%, var(--surface)); }
-.sys.locked .sys-name, .sys.locked .rate { opacity: .65; }
-.sys.conflict { background: color-mix(in srgb, var(--danger) 9%, var(--surface)); }
 .sys-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 11px 14px; cursor: pointer; }
-.sys.locked .sys-head { cursor: not-allowed; }
 .sys-head input { width: 18px; height: 18px; accent-color: var(--accent); flex: none; }
 .sys-name { flex: 1 1 140px; min-width: 0; overflow-wrap: anywhere; }
 .rate { color: var(--muted); font-size: 14px; }
@@ -307,8 +303,8 @@ table.t tr.bad td { background: color-mix(in srgb, var(--danger) 9%, var(--surfa
   // ---------- state ----------
   var S = {
     month: nowMonth(), status: 'connecting', db: null, user: null, uid: null, me: null,
-    canWrite: null, isAdmin: false, loaded: { period: false, claims: false, slots: false }, slow: false,
-    systems: [], claims: {}, slots: {}, my: null, names: {}, saveState: ''
+    canWrite: null, isAdmin: false, loaded: { period: false, claims: false }, slow: false,
+    systems: [], claims: {}, my: null, names: {}, saveState: ''
   };
   var unsubs = [], slowTimer = null, namesKey = '';
 
@@ -318,7 +314,7 @@ table.t tr.bad td { background: color-mix(in srgb, var(--danger) 9%, var(--surfa
     try { localStorage.setItem(PROFILE_KEY, JSON.stringify({ name: S.my.name, dept: S.my.dept, fixRate: S.my.fixRate, capMode: S.my.capMode })); } catch (e) { /* ignore */ }
   }
   function ro() { return S.canWrite === false; }
-  function allLoaded() { return S.loaded.period && S.loaded.claims && S.loaded.slots; }
+  function allLoaded() { return S.loaded.period && S.loaded.claims; }
 
   function initMy() {
     var d = S.claims[S.uid], base = loadProfile();
@@ -342,12 +338,7 @@ table.t tr.bad td { background: color-mix(in srgb, var(--danger) 9%, var(--surfa
     if (S.my && S.my.items && S.my.items[id]) o.push(S.uid);
     return o;
   }
-  function othersFor(id) {
-    var o = itemOwners(id).filter(function (u) { return u !== S.uid; });
-    var sl = S.slots[id];
-    if (sl && sl.owner && sl.owner !== S.uid && o.indexOf(sl.owner) < 0) o.push(sl.owner);
-    return o;
-  }
+  function othersFor(id) { return itemOwners(id).filter(function (u) { return u !== S.uid; }); }
   function names(list) { return list.map(nameOf).join(', '); }
   function sysById(id) { return S.systems.filter(function (s) { return s.id === id; })[0]; }
 
@@ -373,8 +364,8 @@ table.t tr.bad td { background: color-mix(in srgb, var(--danger) 9%, var(--surfa
   function checks(c) {
     var out = [], m = S.my || {};
     var clash = [];
-    c.lines.forEach(function (l) { var o = othersFor(l.id); if (o.length) clash.push(l.name + ' ซ้ำกับ ' + names(o)); });
-    clash.forEach(function (t) { out.push(['bad', t]); });
+    c.lines.forEach(function (l) { var o = othersFor(l.id); if (o.length) clash.push(l.name + ' มี ' + names(o) + ' เลือกด้วย (ตรวจสอบภายหลัง)'); });
+    clash.forEach(function (t) { out.push(['info', t]); });
     var orphan = Object.keys(m.items || {}).filter(function (id) { return !sysById(id); }).length;
     if (orphan) out.push(['warn', orphan + ' รายการที่เลือกไว้ ไม่อยู่ในรายการระบบของเดือนนี้แล้ว']);
     if (!(m.name || '').trim()) out.push(['warn', 'ยังไม่ได้กรอกชื่อผู้เบิก']);
@@ -385,7 +376,7 @@ table.t tr.bad td { background: color-mix(in srgb, var(--danger) 9%, var(--surfa
     var noRef = missingRefs(c);
     if (noRef) out.push(['warn', noRef + ' งานย่อยยังไม่มีหลักฐานอ้างอิง']);
     if (c.over > 0) out.push(['info', 'งานรวมเกิน fix rate อยู่ ' + fmt(c.over) + ' บาท เบิกได้เท่ากับ fix rate']);
-    if (!out.some(function (x) { return x[0] === 'warn' || x[0] === 'bad'; })) out.unshift(['ok', 'ข้อมูลครบ ไม่มีระบบซ้ำ พร้อมส่งออกเอกสาร']);
+    if (!out.some(function (x) { return x[0] === 'warn' || x[0] === 'bad'; })) out.unshift(['ok', 'ข้อมูลครบ พร้อมส่งออกเอกสาร']);
     return out;
   }
 
@@ -438,33 +429,12 @@ table.t tr.bad td { background: color-mix(in srgb, var(--danger) 9%, var(--surfa
     if (myDirty) { clearTimeout(saveTimer); flushSave(); }
   }
 
-  // ---------- slots (จองระบบกันซ้ำ) ----------
-  function slotRef(id) { return S.db.doc('slots/' + S.month + '_' + id); }
-  function claimSlot(id) {
-    var ref = slotRef(id);
-    return ref.acquire({ holder: S.uid, ttlMs: 8000 }).then(function (r) {
-      if (!r.acquired) return { ok: false, reason: 'busy' };
-      return ref.get().then(function (snap) {
-        var d = snap.exists ? snap.data() : null;
-        if (d && d.owner && d.owner !== S.uid) return { ok: false, reason: 'taken', owner: d.owner };
-        return ref.set({ month: S.month, sysId: id, owner: S.uid, at: iso() }).then(function () { return { ok: true }; });
-      });
-    });
-  }
-  function releaseSlot(id) {
-    var ref = slotRef(id);
-    return ref.get().then(function (snap) {
-      var d = snap.exists ? snap.data() : null;
-      if (d && d.owner === S.uid) return ref.delete();
-    }).catch(function () { /* ignore */ });
-  }
-
   // ---------- subscriptions ----------
   function unsubscribeAll() { unsubs.forEach(function (f) { try { f(); } catch (e) { /* ignore */ } }); unsubs = []; }
   function subscribe() {
     unsubscribeAll();
-    S.loaded = { period: false, claims: false, slots: false }; S.slow = false;
-    S.systems = []; S.claims = {}; S.slots = {}; S.my = null; namesKey = '';
+    S.loaded = { period: false, claims: false }; S.slow = false;
+    S.systems = []; S.claims = {}; S.my = null; namesKey = '';
     clearTimeout(slowTimer); slowTimer = setTimeout(function () { if (!allLoaded()) { S.slow = true; renderBanner(); } }, 10000);
     var m = S.month;
     function onErr(e) { if (e && e.code === 'revoked') { S.status = 'nodb'; } else { S.slow = true; } render(); }
@@ -481,12 +451,6 @@ table.t tr.bad td { background: color-mix(in srgb, var(--danger) 9%, var(--surfa
       if (!S.my) initMy();
       onData();
     }, onErr));
-    unsubs.push(S.db.collection('slots').where('month', '==', m).onSnapshot(function (q) {
-      if (m !== S.month) return;
-      var next = {}; q.docs.forEach(function (d) { var v = d.data(); if (v && v.sysId && v.owner) next[v.sysId] = { owner: v.owner }; });
-      S.slots = next; S.loaded.slots = true;
-      onData();
-    }, onErr));
   }
   function onData() {
     if (allLoaded()) { clearTimeout(slowTimer); S.slow = false; resolveNames(); }
@@ -495,7 +459,6 @@ table.t tr.bad td { background: color-mix(in srgb, var(--danger) 9%, var(--surfa
   function resolveNames() {
     if (!S.user) return;
     var ids = Object.keys(S.claims);
-    Object.keys(S.slots).forEach(function (k) { var o = S.slots[k].owner; if (ids.indexOf(o) < 0) ids.push(o); });
     var key = ids.slice().sort().join('|'); if (key === namesKey || !ids.length) return; namesKey = key;
     S.user.profiles(ids).then(function (ps) {
       var changed = false;
@@ -555,12 +518,12 @@ table.t tr.bad td { background: color-mix(in srgb, var(--danger) 9%, var(--surfa
     var rows = S.systems.length ? S.systems.map(function (s) {
       var c = m.items[s.id], on = !!c, others = othersFor(s.id);
       if (on) claimNo += 1;
-      var locked = !on && others.length > 0, clash = on && others.length > 0;
-      var tag = locked ? '<span class="pill muted">เบิกโดย ' + esc(names(others)) + '</span>' : (clash ? '<span class="pill danger">ซ้ำกับ ' + esc(names(others)) + '</span>' : '');
+      var shared = others.length > 0;
+      var tag = shared ? '<span class="pill warn">มี ' + esc(names(others)) + ' เลือกด้วย</span>' : '';
       var detail = on ? '<div class="sys-detail"><div class="sys-top">' +
         '<label class="f">สัดส่วนที่ทำ (%)<input type="number" inputmode="decimal" min="1" max="100" step="1" id="sh-' + s.id + '" data-bind="share" data-id="' + s.id + '" value="' + esc(c.share) + '"' + dis() + '></label>' +
         '<div class="amt num" id="amt-' + s.id + '">฿ ' + fmt((PRICE[s.size] || 0) * (Math.max(0, Math.min(100, parseFloat(c.share) || 0))) / 100) + '</div></div>' + tasksHtml(s, c, claimNo) + '</div>' : '';
-      return '<div class="sys' + (on ? ' on' : '') + (locked ? ' locked' : '') + (clash ? ' conflict' : '') + '"><label class="sys-head"><input type="checkbox" id="chk-' + s.id + '" data-act="toggle" data-id="' + s.id + '"' + (on ? ' checked' : '') + dis(locked) + '>' +
+      return '<div class="sys' + (on ? ' on' : '') + '"><label class="sys-head"><input type="checkbox" id="chk-' + s.id + '" data-act="toggle" data-id="' + s.id + '"' + (on ? ' checked' : '') + dis() + '>' +
         '<span class="sys-name">' + esc(s.name) + '</span>' + tag + sizeChip(s.size) + '<span class="rate num">' + fmt(PRICE[s.size] || 0) + '</span></label>' + detail + '</div>';
     }).join('') : '<div class="empty"><p>เดือนนี้ผู้ดูแลยังไม่ได้ประกาศรายการระบบงาน</p><button type="button" data-act="go" data-go="systems">ไปหน้าระบบงาน</button></div>';
 
@@ -571,7 +534,7 @@ table.t tr.bad td { background: color-mix(in srgb, var(--danger) 9%, var(--surfa
       '<label class="f">Fix rate ต่อเดือน (บาท)<input type="number" inputmode="decimal" min="0" step="100" id="f-fix" data-bind="fixRate" value="' + esc(m.fixRate || '') + '"' + dis() + '></label>' +
       '<label class="f">วิธีใช้ fix rate<select id="f-cap" data-bind="capMode"' + dis() + '><option value="cap"' + (m.capMode !== 'none' ? ' selected' : '') + '>เป็นเพดานยอดเบิก</option><option value="none"' + (m.capMode === 'none' ? ' selected' : '') + '>ไม่จำกัดยอด</option></select></label>' +
       '</div></section>' +
-      '<section class="panel"><div class="panel-head"><h2>งานที่ทำเดือนนี้</h2><span class="hint">ติ๊กระบบที่ทำ ระบบที่มีคนเลือกแล้วจะเลือกซ้ำไม่ได้</span></div>' +
+      '<section class="panel"><div class="panel-head"><h2>งานที่ทำเดือนนี้</h2><span class="hint">ติ๊กระบบที่ทำได้เลย ถ้ามีคนอื่นเลือกระบบเดียวกันจะแจ้งไว้ให้ตรวจสอบภายหลัง</span></div>' +
       '<div class="sys-list">' + rows + '</div></section></div>' +
       '<aside class="panel summary" id="summary" aria-label="สรุปยอดเบิก">' + summaryHtml() + '</aside></div>';
   }
@@ -585,19 +548,18 @@ table.t tr.bad td { background: color-mix(in srgb, var(--danger) 9%, var(--surfa
     var title = '<div class="panel-head"><h2>ระบบงาน ' + esc(fmtMonth(S.month)) + '</h2><span class="hint num" id="size-sum">' + sizeCounts() + '</span></div>';
     if (!S.isAdmin) {
       var items = S.systems.map(function (s) {
-        var o = itemOwners(s.id), sl = S.slots[s.id];
-        var all = o.slice(); if (sl && sl.owner && all.indexOf(sl.owner) < 0) all.push(sl.owner);
+        var all = itemOwners(s.id);
         return '<div class="ro-item"><span class="nm">' + esc(s.name) + '</span>' + sizeChip(s.size) + '<span class="rate num">' + fmt(PRICE[s.size] || 0) + '</span>' +
-          (all.length ? '<span class="pill muted">เบิกโดย ' + esc(names(all)) + '</span>' : '<span class="pill ok">ว่าง</span>') + '</div>';
+          (all.length ? '<span class="pill muted">เลือกโดย ' + esc(names(all)) + '</span>' : '<span class="pill ok">ยังไม่มีคนเลือก</span>') + '</div>';
       }).join('') || '<div class="empty"><p>ผู้ดูแลยังไม่ได้ประกาศรายการระบบของเดือนนี้</p></div>';
       return '<section class="panel">' + title + '<p class="hint">รายการนี้ผู้ดูแลเป็นผู้ประกาศและแก้ไข</p><div class="ro-list">' + items + '</div>' +
         '<div class="btn-row"><button type="button" data-act="copy-systems">คัดลอกรายการเดือนนี้</button></div></section>';
     }
     var rows = S.systems.map(function (s) {
-      var claimed = othersFor(s.id).length > 0 || itemOwners(s.id).length > 0;
+      var claimed = itemOwners(s.id).length > 0;
       return '<div class="sys-row"><input type="text" id="sn-' + s.id + '" data-bind="sysname" data-id="' + s.id + '" value="' + esc(s.name) + '" aria-label="ชื่อระบบ"' + dis() + '>' +
         '<select id="ss-' + s.id + '" data-bind="syssize" data-id="' + s.id + '" aria-label="ขนาด"' + dis() + '>' + sizeOptions(s.size) + '</select>' +
-        '<button type="button" class="danger-link" data-act="del-sys" data-id="' + s.id + '"' + dis(claimed) + (claimed ? ' title="มีผู้เบิกแล้ว ให้ผู้เบิกยกเลิกก่อน"' : '') + '>' + (claimed ? 'มีผู้เบิกแล้ว' : 'ลบ') + '</button></div>';
+        '<button type="button" class="danger-link" data-act="del-sys" data-id="' + s.id + '"' + dis(claimed) + (claimed ? ' title="มีผู้เลือกแล้ว ให้ผู้เบิกยกเลิกก่อน"' : '') + '>' + (claimed ? 'มีผู้เลือกแล้ว' : 'ลบ') + '</button></div>';
     }).join('') || '<div class="empty"><p>ยังไม่มีระบบงานของ ' + esc(fmtMonth(S.month)) + '</p><p class="hint">เพิ่มทีละรายการด้านล่าง หรือวางรายการทั้งชุดในช่องนำเข้า เมื่อบันทึกแล้วทุกคนในกลุ่มจะเห็นทันที</p></div>';
     return '<div class="two"><section class="panel">' + title +
       '<div class="sys-rows">' + rows + '</div>' +
@@ -615,15 +577,11 @@ table.t tr.bad td { background: color-mix(in srgb, var(--danger) 9%, var(--surfa
     var g = gateHtml(); if (g) return g;
     var conflicts = 0, free = 0, claimed = 0;
     var sysRows = S.systems.map(function (s) {
-      var io = itemOwners(s.id), sl = S.slots[s.id];
-      var stale = !!(sl && sl.owner && io.indexOf(sl.owner) < 0);
-      var all = io.slice(); if (stale) all.push(sl.owner);
-      var dup = io.length > 1;
+      var io = itemOwners(s.id), all = io, dup = io.length > 1;
       if (dup) conflicts += 1;
       if (!all.length) free += 1; else claimed += 1;
-      var status = dup ? '<span class="pill danger">ซ้ำ ' + io.length + ' คน</span>' : (stale ? '<span class="pill warn">จองไว้แต่ยังไม่อยู่ในใบเบิก</span>' : (all.length ? '<span class="pill ok">เรียบร้อย</span>' : '<span class="pill muted">ยังไม่มีคนเบิก</span>'));
-      var rel = stale && S.isAdmin && !ro() ? ' <button type="button" class="danger-link" data-act="release-slot" data-id="' + s.id + '">ปล่อยระบบ</button>' : '';
-      return '<tr' + (dup ? ' class="bad"' : '') + '><td>' + esc(s.name) + '</td><td>' + sizeChip(s.size) + '</td><td class="r num">' + fmt(PRICE[s.size] || 0) + '</td><td>' + (all.length ? esc(names(all)) : '<span class="hint">-</span>') + '</td><td>' + status + rel + '</td></tr>';
+      var status = dup ? '<span class="pill danger">ซ้ำ ' + io.length + ' คน</span>' : (all.length ? '<span class="pill ok">เรียบร้อย</span>' : '<span class="pill muted">ยังไม่มีคนเบิก</span>');
+      return '<tr' + (dup ? ' class="bad"' : '') + '><td>' + esc(s.name) + '</td><td>' + sizeChip(s.size) + '</td><td class="r num">' + fmt(PRICE[s.size] || 0) + '</td><td>' + (all.length ? esc(names(all)) : '<span class="hint">-</span>') + '</td><td>' + status + '</td></tr>';
     }).join('');
     var uids = Object.keys(S.claims); if (S.my && uids.indexOf(S.uid) < 0) uids.push(S.uid);
     var people = uids.map(function (u) { var cl = claimOf(u), c = computeFor(cl); return { uid: u, claim: cl, c: c }; })
@@ -642,9 +600,9 @@ table.t tr.bad td { background: color-mix(in srgb, var(--danger) 9%, var(--surfa
       '<div class="stat"><b class="num">' + S.systems.length + '</b><span>ระบบทั้งหมด</span></div>' +
       '<div class="stat"><b class="num">' + claimed + '</b><span>มีคนเบิกแล้ว</span></div>' +
       '<div class="stat"><b class="num">' + free + '</b><span>ยังไม่มีคนเบิก</span></div>' +
-      '<div class="stat' + (conflicts ? ' bad' : '') + '"><b class="num">' + conflicts + '</b><span>ระบบที่ซ้ำกัน</span></div>' +
+      '<div class="stat' + (conflicts ? ' bad' : '') + '"><b class="num">' + conflicts + '</b><span>ระบบที่มีผู้เบิกซ้ำ</span></div>' +
       '<div class="stat"><b class="num">' + fmt(sumNet) + '</b><span>ยอดเบิกรวมของกลุ่ม (บาท)</span></div></div>' +
-      '<section class="panel"><div class="panel-head"><h2>ระบบงานแต่ละระบบ</h2><span class="hint">ผู้เบิกต่อระบบ ตรวจความซ้ำ</span></div>' +
+      '<section class="panel"><div class="panel-head"><h2>ระบบงานแต่ละระบบ</h2><span class="hint">แถวสีแดงคือระบบที่มีผู้เบิกมากกว่า 1 คน ใช้ตรวจหลังพิมพ์เอกสาร</span></div>' +
       (S.systems.length ? '<div class="scroll-x"><table class="t"><thead><tr><th>ระบบ</th><th>ขนาด</th><th class="r">อัตรา</th><th>ผู้เบิก</th><th>สถานะ</th></tr></thead><tbody>' + sysRows + '</tbody></table></div>' : '<div class="empty"><p>ยังไม่มีรายการระบบของเดือนนี้</p></div>') + '</section>' +
       '<section class="panel"><div class="panel-head"><h2>ผู้เบิกแต่ละคน</h2><span class="hint">ยอดตามอัตราเทียบ fix rate</span></div>' +
       '<div class="scroll-x"><table class="t"><thead><tr><th>ชื่อ</th><th class="r">ระบบ</th><th class="r">รวมตามอัตรา</th><th class="r">Fix rate</th><th class="r">ยอดเบิกสุทธิ์</th><th>ข้อสังเกต</th></tr></thead><tbody>' + peopleRows + '</tbody></table></div></section></div>';
@@ -655,7 +613,7 @@ table.t tr.bad td { background: color-mix(in srgb, var(--danger) 9%, var(--surfa
       ['รอบการเบิกเป็นรายเดือน', 'ใช้ผลงานที่เกิดขึ้นในเดือนที่เบิกเท่านั้น'],
       ['เบิกได้เฉพาะระบบในรายการประจำเดือน', 'ผู้ดูแลประกาศรายการระบบใหม่ทุกเดือน ระบบจากเดือนอื่นนำมาเบิกข้ามเดือนไม่ได้'],
       ['ขนาดระบบกำหนดโดยผู้ดูแลรายการ', 'ผู้เบิกไม่เปลี่ยนขนาดเอง อัตราเป็นไปตามตารางด้านล่าง'],
-      ['หนึ่งระบบเบิกได้โดยผู้เบิกคนเดียวต่อเดือน', 'เมื่อมีคนเลือกระบบแล้ว คนอื่นเลือกซ้ำไม่ได้ ถ้าทำหลายงานในระบบเดียวกัน ให้ลงเป็นงานย่อยภายใต้ระบบนั้น ยังนับเป็นหนึ่งรายการ และคิดยอดตามขนาดระบบ ไม่คิดแยกตามงานย่อย'],
+      ['หนึ่งระบบเบิกได้โดยผู้เบิกคนเดียวต่อเดือน', 'หน้านี้ไม่บล็อกการเลือกซ้ำ แต่จะแจ้งและสรุปในแท็บภาพรวมให้ตรวจสอบหลังพิมพ์เอกสารแนบ ถ้าทำหลายงานในระบบเดียวกัน ให้ลงเป็นงานย่อยภายใต้ระบบนั้น ยังนับเป็นหนึ่งรายการ และคิดยอดตามขนาดระบบ ไม่คิดแยกตามงานย่อย'],
       ['ทำเพียงบางส่วนของระบบให้ระบุสัดส่วน', 'ระบุได้ 1 ถึง 100 เปอร์เซ็นต์ ยอดคิดตามสัดส่วนที่ระบุ'],
       ['ทุกงานย่อยต้องมีหลักฐานอ้างอิงที่ตรวจสอบได้', 'เช่น เลข ticket, เอกสารส่งมอบ, release หรือ commit'],
       ['ยอดเบิกสุทธิ์ไม่เกิน fix rate ของผู้เบิก', 'ส่วนที่เกินไม่ยกไปเดือนถัดไป'],
@@ -834,19 +792,11 @@ table.t tr.bad td { background: color-mix(in srgb, var(--danger) 9%, var(--surfa
     if (t.dataset.act === 'toggle') {
       var id = t.dataset.id;
       if (t.checked) {
-        t.disabled = true;
-        claimSlot(id).then(function (r) {
-          if (r.ok) {
-            var first = { id: nid(), title: '', ref: '' };
-            S.my.items[id] = { share: 100, tasks: [first] };
-            scheduleSave(0); render('tt-' + first.id);
-          } else {
-            toast(r.reason === 'busy' ? 'มีคนกำลังเลือกระบบนี้อยู่ ลองใหม่อีกครั้ง' : 'ระบบนี้มีผู้เบิกแล้ว เลือกซ้ำไม่ได้');
-            render();
-          }
-        }, function (err) { writeFailed(err); render(); });
+        var first = { id: nid(), title: '', ref: '' };
+        S.my.items[id] = { share: 100, tasks: [first] };
+        scheduleSave(0); render('tt-' + first.id);
       } else {
-        delete S.my.items[id]; scheduleSave(0); releaseSlot(id); render('chk-' + id);
+        delete S.my.items[id]; scheduleSave(0); render('chk-' + id);
       }
       return;
     }
@@ -907,10 +857,6 @@ table.t tr.bad td { background: color-mix(in srgb, var(--danger) 9%, var(--surfa
         setStatus('คัดลอก ' + d.systems.length + ' ระบบจาก ' + fmtMonth(pm) + ' แล้ว แก้ชื่อและขนาดให้ตรงกับเดือนนี้');
       }, function () { setStatus('อ่านรายการเดือนก่อนไม่สำเร็จ'); });
       return;
-    }
-    if (act === 'release-slot') {
-      if (!S.isAdmin) return;
-      slotRef(el.dataset.id).delete().then(function () { toast('ปล่อยระบบแล้ว'); }, writeFailed); return;
     }
     if (act === 'copy-table') { copyText(toTsv(), 'คัดลอกตารางแล้ว วางใน Excel หรือ Word ได้'); return; }
     if (act === 'save-csv') { saveFile('P4P-' + S.month + '.csv', toCsv(), 'บันทึกไฟล์ CSV แล้ว'); return; }
